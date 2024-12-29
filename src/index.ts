@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import { Worker } from 'node:worker_threads'
 import { loadTsConfig } from 'bundle-require'
 import { exec, type Result as ExecChild } from 'tinyexec'
-import { glob, globSync } from 'tinyglobby'
+import { glob } from 'tinyglobby'
 import kill from 'tree-kill'
 import { version } from '../package.json'
 import { PrettyError, handleError } from './errors'
@@ -376,18 +376,26 @@ export async function build(_options: Options) {
                   : [options.ignoreWatch]
                 : []
 
+              // Convert outDir to absolute path for reliable path comparison
+              const absoluteOutDir = path.resolve(process.cwd(), options.outDir)
               const ignored = [
-                '**/{.git,node_modules}/**',
-                options.outDir,
-                ...customIgnores,
+                '**/node_modules/**',
+                '**/.git/**',
+                absoluteOutDir,
+                ...customIgnores
               ]
 
-              const watchPaths =
-                typeof options.watch === 'boolean'
-                  ? '.'
-                  : Array.isArray(options.watch)
-                    ? options.watch.filter((path) => typeof path === 'string')
-                    : options.watch
+              const watchPaths = (() => {
+                if (typeof options.watch === 'boolean') {
+                  return '.'
+                }
+                if (Array.isArray(options.watch)) {
+                  return options.watch
+                    .filter((p): p is string => typeof p === 'string')
+                    .map((p) => path.resolve(process.cwd(), p))
+                }
+                return path.resolve(process.cwd(), options.watch as string)
+              })()
 
               logger.info(
                 'CLI',
@@ -407,7 +415,16 @@ export async function build(_options: Options) {
               const watcher = watch(await glob(watchPaths), {
                 ignoreInitial: true,
                 ignorePermissionErrors: true,
-                ignored: (p) => globSync(p, { ignore: ignored }).length === 0,
+                ignored: (p: string) => {
+                  const absolutePath = path.resolve(process.cwd(), p)
+                  // Check if path should be ignored using absolute path comparison
+                  return ignored.some(ignore => {
+                    const absoluteIgnore = path.isAbsolute(ignore) 
+                      ? ignore 
+                      : path.resolve(process.cwd(), ignore)
+                    return absolutePath.startsWith(absoluteIgnore)
+                  })
+                },
               })
               watcher.on('all', async (type, file) => {
                 file = slash(file)
